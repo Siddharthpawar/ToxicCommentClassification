@@ -1,0 +1,5 @@
+*.csv
+eda_figures/
+__pycache__/
+.venv/
+.env

@@ -16,6 +16,21 @@ This project uses a **BERT-based** machine learning model to identify and classi
 
 [Link to Dataset](https://www.kaggle.com/competitions/jigsaw-toxic-comment-classification-challenge/)
 
+### Quick exploration (EDA)
+
+1. Download `train.csv` and `test.csv` from Kaggle and place them in the **repo root** (or in `./data/`).
+2. Run:
+
+```bash
+pip install -r requirements.txt
+python explore_dataset.py
+```
+
+This creates:
+
+- `eda_report.md`: dataset summary (columns, missingness, label balance, text-length stats)
+- `eda_figures/`: a few quick plots (if plotting libs are installed)
+
 ## Features
 
 * **Data Preprocessing**: Handles missing data and performs tokenization.
