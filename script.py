@@ -1,5 +1,27 @@
 # BERT Classification + Clustering + WordCloud + External Test Set Evaluation
 
+import os
+
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+# Fast runs by default (subset + 1 epoch). Full data + 3 epochs: TOXIC_FULL=1
+_FULL = os.environ.get("TOXIC_FULL", "").lower() in ("1", "true", "yes")
+if _FULL:
+    _QUICK = False
+else:
+    _QUICK = os.environ.get("TOXIC_QUICK", "1").lower() not in ("0", "false", "no", "off")
+_TRAIN_CSV = os.environ.get("TOXIC_TRAIN_CSV", os.path.join(_ROOT, "train.csv"))
+if not os.path.isfile(_TRAIN_CSV):
+    _fallback_train = os.path.join(_ROOT, "train1.csv")
+    if os.path.isfile(_fallback_train):
+        _TRAIN_CSV = _fallback_train
+    else:
+        raise FileNotFoundError(
+            f"Training CSV not found. Expected train.csv or train1.csv under {_ROOT}, "
+            "or set TOXIC_TRAIN_CSV to your file path."
+        )
+_TEST_CSV = os.environ.get("TOXIC_TEST_CSV", os.path.join(_ROOT, "test.csv"))
+_BERT_MODEL = os.environ.get("TOXIC_BERT_MODEL", "bert-base-uncased")
+
 import pandas as pd
 import numpy as np
 import torch
@@ -15,12 +37,27 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from wordcloud import WordCloud
 import seaborn as sns
-import os
+
+_SAVE_PLOTS = os.environ.get("TOXIC_SAVE_PLOTS", "").lower() in ("1", "true", "yes")
+_PLOT_DIR = os.path.join(_ROOT, "plots")
+
+
+def _finalize_figure(filename: str) -> None:
+    if _SAVE_PLOTS:
+        os.makedirs(_PLOT_DIR, exist_ok=True)
+        path = os.path.join(_PLOT_DIR, filename)
+        plt.savefig(path, dpi=150, bbox_inches="tight")
+        print(f"Saved plot: {path}")
+    plt.show()
+
 
 # --- 1. Load Training Data ---
-train_df = pd.read_csv('/kaggle/input/train1/train1.csv', header=0, low_memory=False)
+train_df = pd.read_csv(_TRAIN_CSV, header=0, low_memory=False)
 label_cols = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
 train_df["labels"] = train_df[label_cols].apply(lambda row: row.astype(float).tolist(), axis=1)
+if _QUICK:
+    _n = int(os.environ.get("TOXIC_QUICK_ROWS", "2000"))
+    train_df = train_df.head(_n).copy()
 
 # --- 2. Train-Test Split ---
 train_data, val_data = train_test_split(train_df[["comment_text", "labels"]], test_size=0.2, random_state=42)
@@ -30,14 +67,18 @@ dataset = DatasetDict({
 })
 
 # --- 3. Tokenizer ---
-tokenizer = BertTokenizer.from_pretrained("/kaggle/input/bert-base-uncased/bert-base-uncased")
+tokenizer = BertTokenizer.from_pretrained(_BERT_MODEL)
 def tokenize(batch):
     return tokenizer(batch["comment_text"], padding="max_length", truncation=True, max_length=128)
 dataset = dataset.map(tokenize, batched=True)
 dataset.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
 
 # --- 4. Load Model ---
-model = BertForSequenceClassification.from_pretrained("/kaggle/input/bert-classification", num_labels=6)
+model = BertForSequenceClassification.from_pretrained(
+    _BERT_MODEL,
+    num_labels=6,
+    problem_type="multi_label_classification",
+)
 
 # --- 5. Metrics ---
 def compute_metrics(eval_pred):
@@ -50,17 +91,19 @@ def compute_metrics(eval_pred):
     }
 
 # --- 6. Trainer Setup ---
+_num_epochs = 1 if _QUICK else 3
 training_args = TrainingArguments(
-    output_dir="./results",
+    output_dir=os.path.join(_ROOT, "results"),
     report_to="none",
     eval_strategy="epoch",
     save_strategy="epoch",
-    logging_dir="./logs",
+    logging_dir=os.path.join(_ROOT, "logs"),
     per_device_train_batch_size=8,
     per_device_eval_batch_size=8,
-    num_train_epochs=3,
+    num_train_epochs=_num_epochs,
     load_best_model_at_end=True,
-    metric_for_best_model="f1"
+    metric_for_best_model="f1",
+    greater_is_better=True,
 )
 
 trainer = Trainer(
@@ -74,8 +117,9 @@ trainer = Trainer(
 # --- 7. Train Model ---
 os.environ["WANDB_DISABLED"] = "true"
 trainer.train()
-model.save_pretrained("./saved_model")
-tokenizer.save_pretrained("./saved_model")
+_saved = os.path.join(_ROOT, "saved_model")
+model.save_pretrained(_saved)
+tokenizer.save_pretrained(_saved)
 
 dataset["train"].reset_format()
 dataset["train"].set_format(
@@ -122,7 +166,7 @@ plt.xlabel("Component 1")
 plt.ylabel("Component 2")
 plt.legend(title="Cluster")
 plt.grid(True)
-plt.show()
+_finalize_figure("clusters_kmeans_svd.png")
 
 # --- 11. WordClouds per Cluster ---
 comment_array = np.array(comment_texts)
@@ -134,10 +178,18 @@ for i in range(5):
     plt.imshow(wordcloud, interpolation="bilinear")
     plt.axis("off")
     plt.title(f"WordCloud for Cluster {i}")
-    plt.show()
+    _finalize_figure(f"wordcloud_cluster_{i}.png")
 
 # --- 12. Load External Test Set ---
-external_test_df = pd.read_csv("/kaggle/input/test-data/test.csv")  # expects 'comment_text' column
+if not os.path.isfile(_TEST_CSV):
+    raise FileNotFoundError(
+        f"Test CSV not found at {_TEST_CSV}. Download test.csv from the Kaggle competition "
+        "or set TOXIC_TEST_CSV."
+    )
+external_test_df = pd.read_csv(_TEST_CSV, low_memory=False)  # expects 'comment_text' column
+if _QUICK:
+    _tn = int(os.environ.get("TOXIC_QUICK_TEST_ROWS", "500"))
+    external_test_df = external_test_df.head(_tn).copy()
 test_dataset = Dataset.from_pandas(external_test_df)
 test_dataset = test_dataset.map(tokenize, batched=True)
 test_dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
@@ -162,7 +214,7 @@ def predict_batch(dataset, model, threshold=0.5):
 test_predictions = predict_batch(test_dataset, model)
 pred_df = pd.DataFrame(test_predictions, columns=label_cols)
 final_output = pd.concat([external_test_df, pred_df], axis=1)
-final_output.to_csv("final_predictions.csv", index=False)
+final_output.to_csv(os.path.join(_ROOT, "final_predictions.csv"), index=False)
 
 from sklearn.metrics import roc_curve, auc, hamming_loss, multilabel_confusion_matrix
 from sklearn.preprocessing import label_binarize
@@ -213,7 +265,7 @@ plt.ylabel("True Positive Rate")
 plt.title("ROC Curves for Toxic Comment Categories")
 plt.legend(loc="lower right")
 plt.grid(True)
-plt.show()
+_finalize_figure("roc_curves.png")
 
 # --- 14.3 Heatmap from Confusion Matrix ---
 conf_matrices = multilabel_confusion_matrix(all_labels, preds)
@@ -226,7 +278,7 @@ for i in range(len(label_cols)):
     axs[i].set_ylabel("True")
 
 plt.tight_layout()
-plt.show()
+_finalize_figure("confusion_matrices.png")
 
 # --- 15. Predicting Toxicity from User Input ---
 def predict_comment(text, model, tokenizer, label_cols, threshold=0.5):

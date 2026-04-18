@@ -3,3 +3,11 @@ eda_figures/
 __pycache__/
 .venv/
 .env
+
+# Training / inference artifacts (too large for GitHub; regenerate with script.py)
+results/
+saved_model/
+logs/
+plots/
+*.safetensors
+**/optimizer.pt
